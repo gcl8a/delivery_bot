@@ -7,6 +7,8 @@
 unsigned long deliveryStartTime = 0;
 volatile unsigned long deliveryDistance = 0;
 
+#define __DEBUG__
+
 ///////////////////////////////////////////
 //CC3000 setup
 ///////////////////////////////////////////
@@ -17,8 +19,8 @@ volatile unsigned long deliveryDistance = 0;
 Adafruit_CC3000 cc3000 = Adafruit_CC3000(ADAFRUIT_CC3000_CS, ADAFRUIT_CC3000_IRQ, ADAFRUIT_CC3000_VBAT,
                          SPI_CLOCK_DIVIDER);
 
-#define WLAN_SSID       "wahoo"        // cannot be longer than 32 characters!
-#define WLAN_PASS       ""
+#define WLAN_SSID       "MOTOROLA-4A7AC"        // cannot be longer than 32 characters!
+#define WLAN_PASS       "6a46f4a354ae9fd8c031"
 
 // Security can be WLAN_SEC_UNSEC, WLAN_SEC_WEP, WLAN_SEC_WPA or WLAN_SEC_WPA2
 #define WLAN_SECURITY   WLAN_SEC_UNSEC
@@ -27,7 +29,7 @@ Adafruit_CC3000 cc3000 = Adafruit_CC3000(ADAFRUIT_CC3000_CS, ADAFRUIT_CC3000_IRQ
 // received before closing the connection.  If you know the server
 // you're accessing is quick to respond, you can reduce this value.
 
-IPAddress tlp_server = cc3000.IP2U32(128, 143, 6, 170);
+const char destServer[] = "ec2-34-209-142-24.us-west-2.compute.amazonaws.com";
 
 //destinations (which double as states)
 #define WAITING_FOR_ORDER 0x00
@@ -68,13 +70,13 @@ byte destination = HQ;
 #define BASE_SPEED 200
 #define SPEED_ADJUST 1
 
-#define OUT_R1 A1
-#define OUT_R2 A2
-#define SPEED_R 6
+#define OUT_R1 A3
+#define OUT_R2 A4
+#define SPEED_R 5
 
-#define OUT_L1 A3
-#define OUT_L2 A4
-#define SPEED_L 5
+#define OUT_L1 A1
+#define OUT_L2 A2
+#define SPEED_L 6
 
 //direction defines
 #define LEFT_FORWARD1 0
@@ -96,13 +98,13 @@ int speedRight = 0;
 
 #define SENSOR_HYS 20   //hysteresis in the reflectance sensors
 
-int leftMin  = 10000;//LEFT_THRESHOLD;
-int leftMax  = 0;//LEFT_THRESHOLD;
-int rightMin = 10000;//RIGHT_THRESHOLD;
-int rightMax = 0;//RIGHT_THRESHOLD;
+unsigned long leftMin  = 10000;//LEFT_THRESHOLD;
+unsigned long leftMax  = 0;//LEFT_THRESHOLD;
+unsigned long rightMin = 10000;//RIGHT_THRESHOLD;
+unsigned long rightMax = 0;//RIGHT_THRESHOLD;
 
-int leftThreshold = (leftMin + leftMax) / 2;
-int rightThreshold = (rightMin + rightMax) / 2;
+unsigned long leftThreshold = (leftMin + leftMax) / 2;
+unsigned long rightThreshold = (rightMin + rightMax) / 2;
 
 //#define ORDER_COMPLETION_DELAY 15000 //for demoing with an LED
 #define SERVO_PIN 7
@@ -111,8 +113,8 @@ Servo myServo;
 ////////////////////////////////////////////////
 //order information -- hard-coded for the moment
 ////////////////////////////////////////////////
-#define UVA_ID "gcl8a"
-String uva_id(UVA_ID);
+uint32_t ip = 0;
+
 uint16_t order_id = 0;
 char warehouse = 0;
 char delivery_address = 0;
@@ -142,7 +144,8 @@ void setup() {
   Calibrate();
   digitalWrite(13, LOW);
   pinMode(13, INPUT); //just in case
-  
+
+#ifndef __DEBUG__  
   /* Initialise the module */
   Serial.print(F("\nInit..."));
   if (!cc3000.begin())
@@ -173,6 +176,18 @@ void setup() {
   {
     delay(1000);
   }*/
+
+  // Try looking up the website's IP address
+  Serial.print(destServer); Serial.print(F(" -> "));
+  while (ip == 0) {
+    if (! cc3000.getHostByName(destServer, &ip)) {
+      Serial.println(F("Couldn't resolve!"));
+    }
+    delay(500);
+  }
+
+  cc3000.printIPdotsRev(ip);
+#endif
 
   pinMode(OUT_R1, OUTPUT);
   pinMode(OUT_R2, OUTPUT);
@@ -224,9 +239,9 @@ int FollowLine(void)
   float leftSensor  = (leftReading - leftMin) / (float)(leftMax - leftMin);
   float rightSensor = (rightReading - rightMin) / (float)(rightMax - rightMin);
 
-//  Serial.print(leftSensor);
-//  Serial.print('\t');
-//  Serial.println(rightSensor);
+  Serial.print(leftSensor);
+  Serial.print('\t');
+  Serial.println(rightSensor);
 
   int sensorsReadingBlack = (leftSensor > 0.6) + (rightSensor > 0.6); //make sure their reading black
   //Serial.print(sensorsReadingBlack);
@@ -437,7 +452,7 @@ void HandleIntersection(void)
       if (destination == HQ) {
         Spin180();
         state = WAITING_FOR_ORDER;
-        WriteCompletedOrder(uva_id, order_id, deliveryDistance, millis() - deliveryStartTime);
+        WriteCompletedOrder(order_id, deliveryDistance, millis() - deliveryStartTime);
       }
       else {
         TurnLeft();
@@ -571,23 +586,29 @@ unsigned long lastRead = 0;
 
 boolean CheckForNewOrder(void)
 {
+
+#ifdef __DEBUG__
+  order_id = 0;
+  warehouse = WAREHOUSE_A;
+  delivery_address = HOUSE_1;
+
+  return true;
+#endif
+
   boolean retVal = false;
-  //Serial.println(F("Check for new orders."));
-  //cc3000.printIPdotsRev(tlp_server);
-  
-  Adafruit_CC3000_Client tlpClient = cc3000.connectTCP(tlp_server, 80);
+  Serial.println(F("Check for new orders."));
+
+  Adafruit_CC3000_Client tlpClient = cc3000.connectTCP(ip, 80);
 
   if (tlpClient.connected()) 
   {
     Serial.print(F("Check orders..."));
     // make HTTP request to get setpoint:
-    tlpClient.fastrprint(F("GET /tlp2017/"));
-    tlpClient.print(uva_id);
-    tlpClient.fastrprint(F("/checkorders.php HTTP/1.1\n"));
-    tlpClient.fastrprint(F("Host:128.143.6.170\n"));
-    tlpClient.fastrprint(F("Connection:close\n"));
+    tlpClient.fastrprint(F("GET /~gcl8a/bot/checkorders.php HTTP/1.1\r\n"));
+    tlpClient.fastrprint(F("Host: "));
+    tlpClient.print((destServer));
+    tlpClient.fastrprint(F("\r\nConnection:close\r\n"));
     tlpClient.fastrprint(F("\r\n\r\n"));
-    tlpClient.println();
   }
   else
   {
@@ -626,30 +647,20 @@ boolean CheckForNewOrder(void)
         }
 
         //parse
+        order_id = processString.substring(7).toInt(); //this will break at the colon
+        Serial.println(order_id);
         int colon = processString.indexOf(":");
-        uva_id = processString.substring(7, colon);
-        if (uva_id != String(UVA_ID))
-        {
-          Serial.println(F("Not us."));
-          //Serial.println(uva_id);
-          //Serial.println(String(UVA_ID));
-
-          break;
-        }
-
-        order_id = processString.substring(colon + 1).toInt(); //this will break at the next colon
-
-        colon = processString.indexOf(":", colon + 1);
 
         char wh = processString[colon + 1];
+        Serial.println(wh);
         if (wh == 'A') warehouse = WAREHOUSE_A;
         else if (wh == 'B') warehouse = WAREHOUSE_B;
         else if (wh == 'C') warehouse = WAREHOUSE_C;
         else break;
 
-        colon = processString.indexOf(":", colon + 1);
+        int comma = processString.indexOf(',', colon + 1);
 
-        char address = processString[colon + 1];
+        char address = processString[comma + 1];
         if (address == '1') delivery_address = HOUSE_1;
         else if (address == '2') delivery_address = HOUSE_2;
         else if (address == '3') delivery_address = HOUSE_3;
@@ -657,10 +668,9 @@ boolean CheckForNewOrder(void)
         else if (address == '5') delivery_address = HOUSE_5;
         else break;
 
-        Serial.println(F("Done."));
+        Serial.println(address);
 
-        //Serial.print(warehouse);
-        //Serial.println(delivery_address);
+        Serial.println(F("Done."));
         
         retVal = true;
         lastRead = millis();
@@ -689,8 +699,8 @@ void Calibrate(void)
   unsigned long startTime = millis();
   while (millis() - startTime < CALIBRATION_TIME)
   {
-    int leftRef = ReadReflectanceSensor(LEFT_REF_PIN);
-    int rightRef = ReadReflectanceSensor(RIGHT_REF_PIN);
+    unsigned long leftRef = ReadReflectanceSensor(LEFT_REF_PIN);
+    unsigned long rightRef = ReadReflectanceSensor(RIGHT_REF_PIN);
 
     if (leftRef < leftMin) leftMin = leftRef;
     if (leftRef > leftMax) leftMax = leftRef;
@@ -744,36 +754,29 @@ bool displayConnectionDetails(void)
   }
 }
 
-void WriteCompletedOrder(String uva_id, int order_id, long distance, long elapsed)
+void WriteCompletedOrder(int order_id, long distance, long elapsed)
 {
   Serial.print("Del: ");
   Serial.println(order_id);
 
-  cc3000.printIPdotsRev(tlp_server);
-  Adafruit_CC3000_Client tlpClient = cc3000.connectTCP(tlp_server, 80);
+  cc3000.printIPdotsRev(ip);
+  Adafruit_CC3000_Client tlpClient = cc3000.connectTCP(ip, 80);
   if (tlpClient.connected())
   {
     //create the sql statement
     //the location of our script
-    tlpClient.print(F("GET /tlp2017/"));
-    tlpClient.print(uva_id);
-    tlpClient.print(F("/delivered.php?order_id="));
- //   tlpClient.print("order_id=");
+    tlpClient.fastrprint(F("GET /~gcl8a/bot/delivered.php?id="));
     tlpClient.print(order_id);
-//    tlpClient.print("&");
     tlpClient.print(F("&distance="));
     tlpClient.print(distance);
-//    tlpClient.print("&");
-    tlpClient.print(F("&elapsed="));
-    tlpClient.print(elapsed);
+//    tlpClient.print(F("&elapsed="));
+//    tlpClient.print(elapsed);
 
-    tlpClient.print(F(" HTTP/1.1\r\n"));
-    tlpClient.print(F("Host: 128.143.6.170\r\n"));
-    //    client.println( "Content-Type: application/x-www-form-urlencoded" );
-    tlpClient.print(F("Connection:close\r\n"));
-    tlpClient.print(F("\r\n\r\n"));
-//    tlpClient.fastrprint(F("\r\n"));
-    tlpClient.println();
+    tlpClient.fastrprint(F(" HTTP/1.1\r\n"));
+    tlpClient.fastrprint(F("Host: "));
+    tlpClient.print(destServer);
+    tlpClient.fastrprint(F("\r\nConnection:close\r\n"));
+    tlpClient.fastrprint(F("\r\n\r\n"));
     
     tlpClient.close();
   }
